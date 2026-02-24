@@ -65,15 +65,32 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [activeTab, setActiveTab] = useState<'home' | 'settings'>('home');
-  const [settings, setSettings] = useState<AppSettings>({
-    alarmEnabled: true,
-    alarmDuration: 30,
-    alarmDurationUnit: 'seconds',
-    customSoundUrl: null,
-    lowTempThreshold: 25,
-    highTempThreshold: 65,
+  const [settings, setSettings] = useState<AppSettings>(() => {
+    const saved = localStorage.getItem('incubator_settings');
+    const defaults: AppSettings = {
+      alarmEnabled: true,
+      alarmDuration: 30,
+      alarmDurationUnit: 'seconds',
+      customSoundUrl: null,
+      lowTempThreshold: 25,
+      highTempThreshold: 65,
+    };
+    if (saved) {
+      try {
+        return { ...defaults, ...JSON.parse(saved), customSoundUrl: null }; // Don't persist blob URLs
+      } catch (e) {
+        return defaults;
+      }
+    }
+    return defaults;
   });
   const [isAlarmActive, setIsAlarmActive] = useState(false);
+
+  // Persistence
+  useEffect(() => {
+    const toSave = { ...settings, customSoundUrl: null };
+    localStorage.setItem('incubator_settings', JSON.stringify(toSave));
+  }, [settings]);
   
   // Refs
   const mqttClient = useRef<mqtt.MqttClient | null>(null);
