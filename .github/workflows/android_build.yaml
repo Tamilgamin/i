@@ -20,11 +20,10 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Remove lock file
-        run: rm -f package-lock.json
-
-      - name: Install dependencies (fix Vite native bindings)
-        run: npm install --include=optional
+      - name: Install dependencies (fix native bindings)
+        run: |
+          npm install --include=optional
+          npm rebuild esbuild
 
       - name: Build web app
         run: npm run build
