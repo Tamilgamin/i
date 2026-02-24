@@ -9,22 +9,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 18
 
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: Install dependencies
-        run: npm install
+      - name: Remove lock file
+         run: rm -f package-lock.json
+         
+      - name: Install dependencies (fix Vite native bindings)
+        run: npm install --include=optional
 
       - name: Build web app
         run: npm run build
