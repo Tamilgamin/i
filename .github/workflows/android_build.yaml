@@ -9,34 +9,46 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      # Checkout repository
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      # Setup Node
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: 18
 
-      - uses: actions/setup-java@v4
+      # Setup Java (Capacitor requires Java 17)
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Install dependencies (fix native bindings)
+      # Install dependencies (fix native bindings issue)
+      - name: Install dependencies
         run: |
+          npm install -D ts-node typescript
           npm install --include=optional
           npm rebuild esbuild
 
+      # Build Vite web app
       - name: Build web app
         run: npm run build
 
+      # Sync Capacitor Android
       - name: Sync Capacitor
         run: npx cap sync android
 
+      # Build Debug APK
       - name: Build APK
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug
 
+      # Upload APK artifact
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
