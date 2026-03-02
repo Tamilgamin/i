@@ -12,6 +12,7 @@ import {
   BellOff, 
   Wifi, 
   WifiOff, 
+  RefreshCw, 
   Volume2, 
   Play, 
   Clock,
@@ -35,12 +36,14 @@ import { LocalNotifications } from '@capacitor/local-notifications';
 import { Haptics } from '@capacitor/haptics';
 import { 
   ResponsiveContainer, 
-  AreaChart, 
-  Area, 
+  LineChart, 
+  Line, 
   XAxis, 
   YAxis, 
   Tooltip, 
-  CartesianGrid 
+  CartesianGrid,
+  AreaChart,
+  Area
 } from 'recharts';
 
 // Utility for tailwind classes
@@ -73,6 +76,10 @@ const TOPICS = {
   humidityLow: 'incubator/humidity/low',
   humidityHighSet: 'incubator/humidity/high/set',
   humidityLowSet: 'incubator/humidity/low/set',
+  fanState: 'incubator/fan',
+  fanControl: 'incubator/fan/set',
+  fanSpeed: 'incubator/fan/speed',
+  fanSpeedControl: 'incubator/fan/speed/set',
 };
 
 // Types
@@ -131,6 +138,8 @@ export default function App() {
   const [humidityStatus, setHumidityStatus] = useState<Status>('DISCONNECTED');
   const [relayState, setRelayState] = useState<'ON' | 'OFF'>('OFF');
   const [humidifierState, setHumidifierState] = useState<'ON' | 'OFF'>('OFF');
+  const [fanState, setFanState] = useState<'ON' | 'OFF'>('OFF');
+  const [fanSpeed, setFanSpeed] = useState<number>(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
@@ -192,15 +201,10 @@ export default function App() {
   const latestTempRef = useRef<number | null>(null);
   const latestHumidityRef = useRef<number | null>(null);
   const settingsRef = useRef<AppSettings>(settings);
-  const activeTabRef = useRef(activeTab);
 
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
-
-  useEffect(() => {
-    activeTabRef.current = activeTab;
-  }, [activeTab]);
 
   useEffect(() => {
     latestTempRef.current = temp;
@@ -364,7 +368,9 @@ export default function App() {
         TOPICS.tempHigh,
         TOPICS.tempLow,
         TOPICS.humidityHigh,
-        TOPICS.humidityLow
+        TOPICS.humidityLow,
+        TOPICS.fanState,
+        TOPICS.fanSpeed
       ]);
     });
 
@@ -478,9 +484,7 @@ export default function App() {
         const val = parseFloat(payload);
         if (!isNaN(val)) {
           setRemoteHighTemp(val);
-          if (activeTabRef.current !== 'settings') {
-            setSettings(s => ({ ...s, highTempThreshold: val }));
-          }
+          setSettings(s => ({ ...s, highTempThreshold: val }));
         }
       }
 
@@ -488,9 +492,7 @@ export default function App() {
         const val = parseFloat(payload);
         if (!isNaN(val)) {
           setRemoteLowTemp(val);
-          if (activeTabRef.current !== 'settings') {
-            setSettings(s => ({ ...s, lowTempThreshold: val }));
-          }
+          setSettings(s => ({ ...s, lowTempThreshold: val }));
         }
       }
 
@@ -498,9 +500,7 @@ export default function App() {
         const val = parseFloat(payload);
         if (!isNaN(val)) {
           setRemoteHighHumidity(val);
-          if (activeTabRef.current !== 'settings') {
-            setSettings(s => ({ ...s, highHumidityThreshold: val }));
-          }
+          setSettings(s => ({ ...s, highHumidityThreshold: val }));
         }
       }
 
@@ -508,9 +508,18 @@ export default function App() {
         const val = parseFloat(payload);
         if (!isNaN(val)) {
           setRemoteLowHumidity(val);
-          if (activeTabRef.current !== 'settings') {
-            setSettings(s => ({ ...s, lowHumidityThreshold: val }));
-          }
+          setSettings(s => ({ ...s, lowHumidityThreshold: val }));
+        }
+      }
+
+      if (topic === TOPICS.fanState) {
+        setFanState(payload.toUpperCase() === 'ON' ? 'ON' : 'OFF');
+      }
+
+      if (topic === TOPICS.fanSpeed) {
+        const val = parseInt(payload);
+        if (!isNaN(val)) {
+          setFanSpeed(val);
         }
       }
     });
@@ -673,22 +682,44 @@ export default function App() {
     mqttClient.current.publish(TOPICS.humidifierControl, newState);
   };
 
+  const toggleFan = () => {
+    if (!mqttClient.current?.connected) return;
+    const newState = fanState === "ON" ? "OFF" : "ON";
+    mqttClient.current.publish(TOPICS.fanControl, newState);
+  };
+
+  const updateFanSpeed = (speed: number) => {
+    setFanSpeed(speed);
+    debouncedPublish(TOPICS.fanSpeedControl, speed.toString());
+  };
+
   const updateTempThresholds = (low: number, high: number) => {
-    setSettings(s => ({ ...s, lowTempThreshold: low, highTempThreshold: high }));
+    // Ensure logical consistency
+    const safeLow = Math.min(low, high - 0.1);
+    const safeHigh = Math.max(high, low + 0.1);
     
-    // Only publish if logical consistency is met
-    if (low < high) {
-      debouncedPublish(TOPICS.tempLowSet, low.toFixed(1));
-      debouncedPublish(TOPICS.tempHighSet, high.toFixed(1));
+    setSettings(s => ({ ...s, lowTempThreshold: safeLow, highTempThreshold: safeHigh }));
+    
+    // Only publish if the value actually changed
+    if (safeLow !== settings.lowTempThreshold) {
+      debouncedPublish(TOPICS.tempLowSet, safeLow.toFixed(1));
+    }
+    if (safeHigh !== settings.highTempThreshold) {
+      debouncedPublish(TOPICS.tempHighSet, safeHigh.toFixed(1));
     }
   };
 
   const updateHumidityThresholds = (low: number, high: number) => {
-    setSettings(s => ({ ...s, lowHumidityThreshold: low, highHumidityThreshold: high }));
+    const safeLow = Math.min(low, high - 1);
+    const safeHigh = Math.max(high, low + 1);
     
-    if (low < high) {
-      debouncedPublish(TOPICS.humidityLowSet, low.toFixed(0));
-      debouncedPublish(TOPICS.humidityHighSet, high.toFixed(0));
+    setSettings(s => ({ ...s, lowHumidityThreshold: safeLow, highHumidityThreshold: safeHigh }));
+    
+    if (safeLow !== settings.lowHumidityThreshold) {
+      debouncedPublish(TOPICS.humidityLowSet, safeLow.toFixed(1));
+    }
+    if (safeHigh !== settings.highHumidityThreshold) {
+      debouncedPublish(TOPICS.humidityHighSet, safeHigh.toFixed(1));
     }
   };
 
@@ -952,24 +983,14 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="bg-zinc-900/30 border border-zinc-800/50 p-4 rounded-3xl h-48 overflow-hidden relative">
-                  <div className="flex items-center justify-between mb-2 px-1">
-                    <div className="flex items-center space-x-2">
-                      <TrendingUp className="w-3 h-3 text-emerald-500" />
-                      <h3 className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Real-time Trend</h3>
-                    </div>
-                    <div className="flex items-center space-x-1">
-                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                      <span className="text-[8px] font-bold text-emerald-500 uppercase tracking-widest">Live</span>
-                    </div>
-                  </div>
+                <div className="bg-zinc-900/30 border border-zinc-800/50 p-2 rounded-2xl h-24 overflow-hidden relative">
                   {history.length > 1 ? (
-                    <div className="absolute inset-x-0 bottom-0 h-32 w-full">
+                    <div className="absolute inset-0 w-full h-full">
                       <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={history.slice(-30)} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                        <AreaChart data={history.slice(-30)} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
                           <defs>
                             <linearGradient id="miniTemp" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                              <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
                               <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
                             </linearGradient>
                           </defs>
@@ -978,7 +999,7 @@ export default function App() {
                             dataKey="temp" 
                             stroke="#10b981" 
                             fill="url(#miniTemp)" 
-                            strokeWidth={2} 
+                            strokeWidth={1.5} 
                             dot={false}
                             isAnimationActive={false}
                           />
@@ -1104,6 +1125,58 @@ export default function App() {
                       </button>
                     </div>
                   </div>
+
+                  {/* Fan Control */}
+                  <div className={cn(
+                    "bg-zinc-900/50 border border-zinc-800 p-4 rounded-3xl backdrop-blur-md space-y-4 transition-all duration-500",
+                    controlMode === 'MANUAL' ? "opacity-100" : "opacity-40"
+                  )}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-3">
+                        <div className={cn(
+                          "p-2 rounded-xl transition-colors duration-500",
+                          fanState === 'ON' ? "bg-blue-500/20" : "bg-zinc-800"
+                        )}>
+                          <RefreshCw className={cn("w-5 h-5", fanState === "ON" ? "text-blue-500 animate-spin" : "text-zinc-600")} style={{ animationDuration: fanState === 'ON' ? `${Math.max(0.5, 2 - (fanSpeed / 50))}s` : '0s' }} />
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-zinc-200 uppercase tracking-tight block">Fan System</span>
+                          <span className="text-[8px] text-zinc-500 font-bold uppercase tracking-widest">{fanState === 'ON' ? `Running at ${fanSpeed}%` : 'Stopped'}</span>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={toggleFan}
+                        disabled={!isConnected || controlMode === 'AUTO'}
+                        className={cn(
+                          "w-12 h-6 rounded-full relative transition-all duration-500 disabled:opacity-30",
+                          fanState === "ON" ? "bg-blue-500" : "bg-zinc-800",
+                          controlMode === 'AUTO' && "cursor-not-allowed"
+                        )}
+                      >
+                        <motion.div 
+                          animate={{ x: fanState === "ON" ? 24 : 4 }}
+                          className="absolute top-1 w-4 h-4 bg-white rounded-full shadow-lg" 
+                        />
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-[8px] font-bold uppercase tracking-widest text-zinc-500">
+                        <span>Fan Speed</span>
+                        <span className="text-blue-400">{fanSpeed}%</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="100" 
+                        step="1" 
+                        value={fanSpeed}
+                        disabled={!isConnected || controlMode === 'AUTO' || fanState === 'OFF'}
+                        onChange={(e) => updateFanSpeed(parseInt(e.target.value))}
+                        className="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-blue-500 disabled:opacity-30 disabled:cursor-not-allowed"
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 {/* Environmental Threshold Controls */}
@@ -1141,8 +1214,8 @@ export default function App() {
                         </div>
                         <input 
                           type="range" 
-                          min="30" 
-                          max="40" 
+                          min="0" 
+                          max="100" 
                           step="0.1" 
                           value={settings.lowTempThreshold}
                           onChange={(e) => updateTempThresholds(parseFloat(e.target.value), settings.highTempThreshold)}
@@ -1158,8 +1231,8 @@ export default function App() {
                         </div>
                         <input 
                           type="range" 
-                          min="30" 
-                          max="40" 
+                          min="0" 
+                          max="100" 
                           step="0.1" 
                           value={settings.highTempThreshold}
                           onChange={(e) => updateTempThresholds(settings.lowTempThreshold, parseFloat(e.target.value))}
@@ -1197,8 +1270,8 @@ export default function App() {
                         </div>
                         <input 
                           type="range" 
-                          min="30" 
-                          max="90" 
+                          min="0" 
+                          max="100" 
                           step="1" 
                           value={settings.lowHumidityThreshold}
                           onChange={(e) => updateHumidityThresholds(parseFloat(e.target.value), settings.highHumidityThreshold)}
@@ -1214,8 +1287,8 @@ export default function App() {
                         </div>
                         <input 
                           type="range" 
-                          min="30" 
-                          max="90" 
+                          min="0" 
+                          max="100" 
                           step="1" 
                           value={settings.highHumidityThreshold}
                           onChange={(e) => updateHumidityThresholds(settings.lowHumidityThreshold, parseFloat(e.target.value))}
@@ -1285,18 +1358,8 @@ export default function App() {
                   {history.length > 1 ? (
                     <div className="absolute inset-0 w-full h-full p-2">
                       <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={history} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                          <defs>
-                            <linearGradient id="colorTemp" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
-                              <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                            </linearGradient>
-                            <linearGradient id="colorHumidity" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                              <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                            </linearGradient>
-                          </defs>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} opacity={0.5} />
+                        <LineChart data={history} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} opacity={0.3} />
                           <XAxis 
                             dataKey="time" 
                             stroke="#71717a" 
@@ -1323,27 +1386,26 @@ export default function App() {
                             }}
                             itemStyle={{ fontSize: '10px' }}
                           />
-                          <Area 
+                          <Line 
                             type="monotone" 
                             dataKey="temp" 
                             name="Temp"
                             stroke="#10b981" 
-                            fillOpacity={1} 
-                            fill="url(#colorTemp)" 
                             strokeWidth={2}
-                            isAnimationActive={false}
+                            dot={false}
+                            animationDuration={300}
                           />
-                          <Area 
+                          <Line 
                             type="monotone" 
                             dataKey="humidity" 
                             name="Humidity"
                             stroke="#3b82f6" 
-                            fillOpacity={1} 
-                            fill="url(#colorHumidity)" 
                             strokeWidth={2}
-                            isAnimationActive={false}
+                            strokeDasharray="5 5"
+                            dot={false}
+                            animationDuration={300}
                           />
-                        </AreaChart>
+                        </LineChart>
                       </ResponsiveContainer>
                     </div>
                   ) : (
@@ -1438,10 +1500,7 @@ export default function App() {
                             step="0.1"
                             value={settings.lowTempThreshold}
                             onChange={(e) => updateTempThresholds(parseFloat(e.target.value) || 0, settings.highTempThreshold)}
-                            className={cn(
-                              "w-full bg-zinc-800 border-none rounded-lg px-2 py-2 text-[10px] focus:ring-1 outline-none",
-                              settings.lowTempThreshold >= settings.highTempThreshold ? "ring-1 ring-red-500/50" : "focus:ring-blue-500"
-                            )}
+                            className="w-full bg-zinc-800 border-none rounded-lg px-2 py-2 text-[10px] focus:ring-1 focus:ring-blue-500 outline-none"
                             placeholder="Low"
                           />
                         </div>
@@ -1452,10 +1511,7 @@ export default function App() {
                             step="0.1"
                             value={settings.highTempThreshold}
                             onChange={(e) => updateTempThresholds(settings.lowTempThreshold, parseFloat(e.target.value) || 0)}
-                            className={cn(
-                              "w-full bg-zinc-800 border-none rounded-lg px-2 py-2 text-[10px] focus:ring-1 outline-none",
-                              settings.lowTempThreshold >= settings.highTempThreshold ? "ring-1 ring-red-500/50" : "focus:ring-red-500"
-                            )}
+                            className="w-full bg-zinc-800 border-none rounded-lg px-2 py-2 text-[10px] focus:ring-1 focus:ring-red-500 outline-none"
                             placeholder="High"
                           />
                         </div>
@@ -1475,10 +1531,7 @@ export default function App() {
                             type="number" 
                             value={settings.lowHumidityThreshold}
                             onChange={(e) => updateHumidityThresholds(parseFloat(e.target.value) || 0, settings.highHumidityThreshold)}
-                            className={cn(
-                              "w-full bg-zinc-800 border-none rounded-lg px-2 py-2 text-[10px] focus:ring-1 outline-none",
-                              settings.lowHumidityThreshold >= settings.highHumidityThreshold ? "ring-1 ring-red-500/50" : "focus:ring-cyan-500"
-                            )}
+                            className="w-full bg-zinc-800 border-none rounded-lg px-2 py-2 text-[10px] focus:ring-1 focus:ring-cyan-500 outline-none"
                             placeholder="Low"
                           />
                         </div>
@@ -1488,10 +1541,7 @@ export default function App() {
                             type="number" 
                             value={settings.highHumidityThreshold}
                             onChange={(e) => updateHumidityThresholds(settings.lowHumidityThreshold, parseFloat(e.target.value) || 0)}
-                            className={cn(
-                              "w-full bg-zinc-800 border-none rounded-lg px-2 py-2 text-[10px] focus:ring-1 outline-none",
-                              settings.lowHumidityThreshold >= settings.highHumidityThreshold ? "ring-1 ring-red-500/50" : "focus:ring-amber-500"
-                            )}
+                            className="w-full bg-zinc-800 border-none rounded-lg px-2 py-2 text-[10px] focus:ring-1 focus:ring-amber-500 outline-none"
                             placeholder="High"
                           />
                         </div>
