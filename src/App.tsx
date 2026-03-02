@@ -339,51 +339,44 @@ export default function App() {
     }
   }, []);
 
-  // 🔔 Notification Actions
+  // 🔔 Notification Actions & Foreground Service
   useEffect(() => {
     if (Capacitor.isNativePlatform()) {
-      const initNotifications = async () => {
-        try {
-          const perm = await LocalNotifications.requestPermissions();
-          console.log('Notification permission:', perm.display);
-          
-          // Register actions
-          await LocalNotifications.registerActionTypes({
-            types: [
-              {
-                id: 'ALARM_ACTIONS',
-                actions: [
-                  { id: 'mute', title: 'Mute Alarm', foreground: true }
-                ]
-              }
-            ]
-          });
-
-          // Listen for actions
-          await LocalNotifications.addListener('localNotificationActionPerformed', (action) => {
-            if (action.actionId === 'mute') {
-              stopAlarm();
+      try {
+        LocalNotifications.requestPermissions();
+        
+        // Register actions
+        LocalNotifications.registerActionTypes({
+          types: [
+            {
+              id: 'ALARM_ACTIONS',
+              actions: [
+                { id: 'mute', title: 'Mute Alarm', foreground: true }
+              ]
             }
-          });
-        } catch (e) {
-          console.error("Notification setup failed:", e);
-        }
-      };
-      
-      // Small delay to ensure platform is ready
-      const timer = setTimeout(initNotifications, 500);
-      return () => clearTimeout(timer);
+          ]
+        });
+
+        // Listen for actions
+        LocalNotifications.addListener('localNotificationActionPerformed', (action) => {
+          if (action.actionId === 'mute') {
+            stopAlarm();
+          }
+        });
+      } catch (e) {
+        console.error("Notification setup failed:", e);
+      }
     } else if ("Notification" in window && Notification.permission === "default") {
       Notification.requestPermission();
     }
   }, [stopAlarm]);
 
-  // 🚀 Foreground service (Disabled for Android 15 compatibility)
-  /*
+  // 🚀 Foreground service (keeps app alive)
   useEffect(() => {
     if (Capacitor.getPlatform() === "android") {
       const timer = setTimeout(() => {
         try {
+          // Attempt to start foreground service if plugin exists
           // @ts-ignore
           const fgService = window.cordova?.plugins?.foregroundService || window.Capacitor?.Plugins?.ForegroundService;
           if (fgService && typeof fgService.start === 'function') {
@@ -392,226 +385,206 @@ export default function App() {
         } catch (e) {
           console.warn("Foreground service failed to start:", e);
         }
-      }, 1000);
+      }, 1000); // Small delay to ensure platform is ready
       return () => clearTimeout(timer);
     }
-  }, []);
-  */
-
-  useEffect(() => {
-    const handleError = (event: ErrorEvent) => {
-      console.error('[Global Error]', event.error);
-      setErrorMsg(`App Error: ${event.message}`);
-    };
-    window.addEventListener('error', handleError);
-    return () => window.removeEventListener('error', handleError);
   }, []);
 
   const [reconnectTrigger, setReconnectTrigger] = useState(0);
 
   // MQTT Connection Logic
   useEffect(() => {
-    let client: mqtt.MqttClient | null = null;
-    
-    const connect = () => {
-      try {
-        console.log('[MQTT] Connecting to broker...');
-        setIsReconnecting(true);
-        
-        // Use explicit options for better compatibility
-        client = mqtt.connect(`wss://${MQTT_CONFIG.host}:${MQTT_CONFIG.port}/mqtt`, {
-          username: MQTT_CONFIG.username,
-          password: MQTT_CONFIG.password,
-          clientId: `incubator_${Math.random().toString(16).slice(2, 10)}`,
-          clean: true,
-          connectTimeout: 60000, // 60 seconds timeout
-          reconnectPeriod: 5000,
-          keepalive: 60,
-          reschedulePings: true,
-          rejectUnauthorized: false, // Helpful in some mobile environments
-          protocolVersion: 4, // Explicitly use MQTT 3.1.1 for broad compatibility
-        });
+    console.log('[MQTT] Connecting to broker...');
+    const client = mqtt.connect(`wss://${MQTT_CONFIG.host}:${MQTT_CONFIG.port}/mqtt`, {
+      username: MQTT_CONFIG.username,
+      password: MQTT_CONFIG.password,
+      clientId: `incubator_${Math.random().toString(16).slice(2, 10)}`,
+      clean: true,
+      connectTimeout: 30000,
+      reconnectPeriod: 5000,
+      keepalive: 60,
+      reschedulePings: true,
+    });
 
-        mqttClient.current = client;
+    mqttClient.current = client;
 
-        client.on('connect', () => {
-          console.log('[MQTT] Connected successfully');
-          setIsConnected(true);
-          setIsReconnecting(false);
-          setErrorMsg(null);
-          client?.subscribe([
-            TOPICS.temp, 
-            TOPICS.humidity, 
-            TOPICS.relayState,
-            TOPICS.humidifierState,
-            TOPICS.tempHigh,
-            TOPICS.tempLow,
-            TOPICS.humidityHigh,
-            TOPICS.humidityLow,
-            TOPICS.fanState,
-            TOPICS.fanSpeed
-          ], (err) => {
-            if (err) console.error('[MQTT] Subscription error:', err);
-          });
-        });
+    client.on('connect', () => {
+      setIsConnected(true);
+      setIsReconnecting(false);
+      setErrorMsg(null);
+      client.subscribe([
+        TOPICS.temp, 
+        TOPICS.humidity, 
+        TOPICS.relayState,
+        TOPICS.humidifierState,
+        TOPICS.tempHigh,
+        TOPICS.tempLow,
+        TOPICS.humidityHigh,
+        TOPICS.humidityLow,
+        TOPICS.fanState,
+        TOPICS.fanSpeed
+      ]);
+    });
 
-        client.on('error', (err) => {
-          if (err.message !== 'client disconnecting') {
-            console.error('[MQTT] Connection Error:', err.message);
-            setErrorMsg(err.message);
-          }
-          setIsConnected(false);
-          setIsReconnecting(false);
-        });
-
-        client.on('close', () => {
-          console.log('[MQTT] Connection closed');
-          setIsConnected(false);
-          setStatus('DISCONNECTED');
-        });
-
-        client.on('offline', () => {
-          console.log('[MQTT] Client offline');
-          setIsConnected(false);
-          setErrorMsg('Broker offline');
-        });
-
-        client.on('reconnect', () => {
-          console.log('[MQTT] Reconnecting...');
-          setIsReconnecting(true);
-          setIsConnected(false);
-        });
-
-        client.on('message', (topic, message) => {
-          const payload = message.toString();
-          const now = new Date();
-          const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-          const currentSettings = settingsRef.current;
-
-          if (topic === TOPICS.temp) {
-            const newTemp = parseFloat(payload);
-            if (isNaN(newTemp) || newTemp < -50) return;
-
-            setTemp(current => {
-              setPrevTemp(current);
-              return newTemp;
-            });
-            setPulseKey(k => k + 1);
-            
-            setHistory(prev => {
-              const h = latestHumidityRef.current !== null ? latestHumidityRef.current : 0;
-              const newPoint = { 
-                id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-                time: timeStr, 
-                temp: newTemp,
-                humidity: h,
-                timestamp: Date.now() 
-              };
-              if (prev.length > 0 && Date.now() - prev[prev.length - 1].timestamp < 2000) {
-                const last = prev[prev.length - 1];
-                return [...prev.slice(0, -1), { ...last, temp: newTemp, time: timeStr }];
-              }
-              return [...prev, newPoint].slice(-100);
-            });
-
-            if (newTemp < currentSettings.alarmLowTemp) setStatus('LOW');
-            else if (newTemp > currentSettings.alarmHighTemp) setStatus('HIGH');
-            else setStatus('NORMAL');
-          }
-
-          if (topic === TOPICS.humidity) {
-            const newHumidity = parseFloat(payload);
-            if (isNaN(newHumidity)) return;
-
-            setHumidity(current => {
-              setPrevHumidity(current);
-              return newHumidity;
-            });
-            
-            setHistory(prev => {
-              const t = latestTempRef.current !== null ? latestTempRef.current : 0;
-              const newPoint = { 
-                id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-                time: timeStr, 
-                temp: t,
-                humidity: newHumidity,
-                timestamp: Date.now() 
-              };
-              if (prev.length > 0 && Date.now() - prev[prev.length - 1].timestamp < 2000) {
-                const last = prev[prev.length - 1];
-                return [...prev.slice(0, -1), { ...last, humidity: newHumidity, time: timeStr }];
-              }
-              return [...prev, newPoint].slice(-100);
-            });
-
-            if (newHumidity < currentSettings.alarmLowHum) setHumidityStatus('LOW');
-            else if (newHumidity > currentSettings.alarmHighHum) setHumidityStatus('HIGH');
-            else setHumidityStatus('NORMAL');
-          }
-
-          if (topic === TOPICS.relayState) {
-            setRelayState(payload.toUpperCase() === 'ON' ? 'ON' : 'OFF');
-          }
-
-          if (topic === TOPICS.humidifierState) {
-            setHumidifierState(payload.toUpperCase() === 'ON' ? 'ON' : 'OFF');
-          }
-
-          if (topic === TOPICS.tempHigh) {
-            const val = parseFloat(payload);
-            if (!isNaN(val)) {
-              setRemoteHighTemp(val);
-              setSettings(s => ({ ...s, highTempThreshold: val }));
-            }
-          }
-
-          if (topic === TOPICS.tempLow) {
-            const val = parseFloat(payload);
-            if (!isNaN(val)) {
-              setRemoteLowTemp(val);
-              setSettings(s => ({ ...s, lowTempThreshold: val }));
-            }
-          }
-
-          if (topic === TOPICS.humidityHigh) {
-            const val = parseFloat(payload);
-            if (!isNaN(val)) {
-              setRemoteHighHumidity(val);
-              setSettings(s => ({ ...s, highHumidityThreshold: val }));
-            }
-          }
-
-          if (topic === TOPICS.humidityLow) {
-            const val = parseFloat(payload);
-            if (!isNaN(val)) {
-              setRemoteLowHumidity(val);
-              setSettings(s => ({ ...s, lowHumidityThreshold: val }));
-            }
-          }
-
-          if (topic === TOPICS.fanState) {
-            setFanState(payload.toUpperCase() === 'ON' ? 'ON' : 'OFF');
-          }
-
-          if (topic === TOPICS.fanSpeed) {
-            const val = parseInt(payload);
-            if (!isNaN(val)) {
-              setFanSpeed(val);
-            }
-          }
-        });
-      } catch (e) {
-        console.error('[MQTT] Connect failed:', e);
-        setErrorMsg('MQTT Connection Failed');
+    client.on('error', (err) => {
+      if (err.message !== 'client disconnecting') {
+        console.error('MQTT Error:', err);
+        setErrorMsg(err.message);
       }
-    };
+      setIsConnected(false);
+    });
 
-    const timer = setTimeout(connect, 500);
+    client.on('close', () => {
+      setIsConnected(false);
+      setErrorMsg('Connection closed');
+    });
+
+    client.on('offline', () => {
+      setIsConnected(false);
+      setErrorMsg('Broker offline');
+    });
+
+    client.on('reconnect', () => {
+      setIsReconnecting(true);
+      setIsConnected(false);
+      setErrorMsg(null);
+    });
+
+    client.on('message', (topic, message) => {
+      const payload = message.toString();
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const currentSettings = settingsRef.current;
+
+      if (topic === TOPICS.temp) {
+        const newTemp = parseFloat(payload);
+        // Ignore sensor errors (common values like -127 or extreme negatives)
+        if (isNaN(newTemp) || newTemp < -50) return;
+
+        setTemp(current => {
+          setPrevTemp(current);
+          return newTemp;
+        });
+        setPulseKey(k => k + 1);
+        
+        // Add to history
+        setHistory(prev => {
+          const h = latestHumidityRef.current !== null ? latestHumidityRef.current : 0;
+          const newPoint = { 
+            id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            time: timeStr, 
+            temp: newTemp,
+            humidity: h,
+            timestamp: Date.now() 
+          };
+          // If the last point was added less than 2 seconds ago, update it instead of adding new
+          if (prev.length > 0 && Date.now() - prev[prev.length - 1].timestamp < 2000) {
+            const last = prev[prev.length - 1];
+            return [...prev.slice(0, -1), { ...last, temp: newTemp, time: timeStr }];
+          }
+          return [...prev, newPoint].slice(-100);
+        });
+
+        // Derive status relative to ALARM thresholds
+        if (newTemp < currentSettings.alarmLowTemp) setStatus('LOW');
+        else if (newTemp > currentSettings.alarmHighTemp) setStatus('HIGH');
+        else setStatus('NORMAL');
+      }
+
+      if (topic === TOPICS.humidity) {
+        const newHumidity = parseFloat(payload);
+        if (isNaN(newHumidity)) return;
+
+        setHumidity(current => {
+          setPrevHumidity(current);
+          return newHumidity;
+        });
+        
+        // Add to history
+        setHistory(prev => {
+          const t = latestTempRef.current !== null ? latestTempRef.current : 0;
+          const newPoint = { 
+            id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            time: timeStr, 
+            temp: t,
+            humidity: newHumidity,
+            timestamp: Date.now() 
+          };
+          // If the last point was added less than 2 seconds ago, update it instead of adding new
+          if (prev.length > 0 && Date.now() - prev[prev.length - 1].timestamp < 2000) {
+            const last = prev[prev.length - 1];
+            return [...prev.slice(0, -1), { ...last, humidity: newHumidity, time: timeStr }];
+          }
+          return [...prev, newPoint].slice(-100);
+        });
+
+        // Derive status relative to ALARM thresholds
+        if (newHumidity < currentSettings.alarmLowHum) setHumidityStatus('LOW');
+        else if (newHumidity > currentSettings.alarmHighHum) setHumidityStatus('HIGH');
+        else setHumidityStatus('NORMAL');
+      }
+
+      if (topic === TOPICS.relayState) {
+        setRelayState(payload.toUpperCase() === 'ON' ? 'ON' : 'OFF');
+      }
+
+      if (topic === TOPICS.humidifierState) {
+        setHumidifierState(payload.toUpperCase() === 'ON' ? 'ON' : 'OFF');
+      }
+
+      if (topic === TOPICS.tempHigh) {
+        const val = parseFloat(payload);
+        if (!isNaN(val)) {
+          setRemoteHighTemp(val);
+          setSettings(s => ({ ...s, highTempThreshold: val }));
+        }
+      }
+
+      if (topic === TOPICS.tempLow) {
+        const val = parseFloat(payload);
+        if (!isNaN(val)) {
+          setRemoteLowTemp(val);
+          setSettings(s => ({ ...s, lowTempThreshold: val }));
+        }
+      }
+
+      if (topic === TOPICS.humidityHigh) {
+        const val = parseFloat(payload);
+        if (!isNaN(val)) {
+          setRemoteHighHumidity(val);
+          setSettings(s => ({ ...s, highHumidityThreshold: val }));
+        }
+      }
+
+      if (topic === TOPICS.humidityLow) {
+        const val = parseFloat(payload);
+        if (!isNaN(val)) {
+          setRemoteLowHumidity(val);
+          setSettings(s => ({ ...s, lowHumidityThreshold: val }));
+        }
+      }
+
+      if (topic === TOPICS.fanState) {
+        setFanState(payload.toUpperCase() === 'ON' ? 'ON' : 'OFF');
+      }
+
+      if (topic === TOPICS.fanSpeed) {
+        const val = parseInt(payload);
+        if (!isNaN(val)) {
+          setFanSpeed(val);
+        }
+      }
+    });
+
+    client.on('close', () => {
+      setIsConnected(false);
+      setStatus('DISCONNECTED');
+    });
+
+    mqttClient.current = client;
 
     return () => {
-      clearTimeout(timer);
       if (client) {
-        console.log('[MQTT] Cleaning up connection...');
         client.end(true);
         mqttClient.current = null;
       }
