@@ -1,0 +1,5 @@
+{
+  "name": "Incubator Monitor",
+  "description": "Real-time chicken incubator monitor with MQTT integration for temperature, humidity, and fan control.",
+  "requestFramePermissions": ["notifications"]
+}

@@ -1,0 +1,165 @@
+mqtt_server = "57f9938c484c4f0f9ad4b79b70ae3bf7.s1.eu.hivemq.cloud";
+const int mqtt_port = 8883;
+const char* mqtt_user = "qqqqq";
+const char* mqtt_pass = "Agash2008";
+
+WiFiClientSecure espClient;
+
+
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+#define TRIG D5
+#define ECHO D6
+#define BUZZER D7   // local alarm
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// WiFi
+const char* ssid = "MS_4";
+const char* password = "12345678qq";
+
+// HiveMQ Cloud
+const char* mqtt_server = "57f9938c484c4f0f9ad4b79b70ae3bf7.s1.eu.hivemq.cloud";
+const int mqtt_port = 8883;
+const char* mqtt_user = "qqqqq";
+const char* mqtt_pass = "Agash2008";
+
+WiFiClientSecure espClient;
+PubSubClient client(espClient);
+
+// Tank settings
+float tankHeight = 95.0;      // cm
+float fullThreshold = 12.0;   // FULL level distance
+
+// Timing (3 seconds)
+unsigned long lastUpdate = 0;
+const long interval = 3000;
+
+// 🔧 Measure distance
+float getDistance() {
+  digitalWrite(TRIG, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG, LOW);
+
+  long duration = pulseIn(ECHO, HIGH, 30000);
+  float distance = duration * 0.034 / 2;
+
+  if (distance <= 0 || distance > tankHeight) return tankHeight;
+  return distance;
+}
+
+// 📶 Connect WiFi
+void connectWiFi() {
+  Serial.println("Connecting WiFi...");
+  lcd.setCursor(0, 1);
+  lcd.print("Connecting WiFi");
+
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi Connected!");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
+
+  lcd.clear();
+  lcd.print("WiFi Connected");
+}
+
+// 🌍 Reconnect MQTT
+void reconnectMQTT() {
+  while (!client.connected()) {
+    Serial.print("Connecting MQTT...");
+    espClient.setInsecure();  // skip SSL cert validation
+
+    if (client.connect("TankMonitorESP", mqtt_user, mqtt_pass)) {
+      Serial.println("Connected!");
+    } else {
+      Serial.print("Failed rc=");
+      Serial.print(client.state());
+      Serial.println(" retrying...");
+      delay(2000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(TRIG, OUTPUT);
+  pinMode(ECHO, INPUT);
+  pinMode(BUZZER, OUTPUT);
+
+  // LCD init
+  Wire.begin(D2, D1);
+  lcd.init();
+  lcd.backlight();
+  lcd.print("Tank Monitor");
+
+  connectWiFi();
+
+  client.setServer(mqtt_server, mqtt_port);
+}
+
+void loop() {
+  if (!client.connected()) reconnectMQTT();
+  client.loop();
+
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - lastUpdate >= interval) {
+    lastUpdate = currentMillis;
+
+    float distance = getDistance();
+    float percent = ((tankHeight - distance) / tankHeight) * 100;
+
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+
+    String status = "OK";
+    if (distance <= fullThreshold) status = "FULL";
+    else if (percent < 30) status = "LOW";
+
+    // 🔍 Serial Monitor
+    Serial.println("------ Tank Reading ------");
+    Serial.print("Distance: "); Serial.println(distance);
+    Serial.print("Level: "); Serial.println(percent);
+    Serial.print("Status: "); Serial.println(status);
+    Serial.println("--------------------------");
+
+    // 📟 LCD Display
+    lcd.setCursor(0, 0);
+    lcd.print("Level: ");
+    lcd.print(percent, 1);
+    lcd.print("%   ");
+
+    lcd.setCursor(0, 1);
+    lcd.print("Status: ");
+    lcd.print(status);
+    lcd.print("   ");
+
+    // 🔔 Local buzzer
+    if (status == "FULL") {
+      digitalWrite(BUZZER, HIGH);
+    } else {
+      digitalWrite(BUZZER, LOW);
+    }
+
+    // 🌍 Publish to MQTT Cloud
+    client.publish("tank/level", String(percent).c_str());
+    client.publish("tank/status", status.c_str());
+  }
+}
+
+
+
+
